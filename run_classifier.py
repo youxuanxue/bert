@@ -26,6 +26,8 @@ import optimization
 import tokenization
 import tensorflow as tf
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+
 flags = tf.flags
 
 FLAGS = flags.FLAGS
