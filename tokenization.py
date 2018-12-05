@@ -82,20 +82,20 @@ def load_vocab(vocab_file):
   return vocab
 
 
-def convert_by_vocab(vocab, items):
+def convert_by_vocab(vocab, items, default):
   """Converts a sequence of [tokens|ids] using the vocab."""
   output = []
   for item in items:
-    output.append(vocab[item])
+    output.append(vocab.get(item, default))
   return output
 
 
 def convert_tokens_to_ids(vocab, tokens):
-  return convert_by_vocab(vocab, tokens)
+  return convert_by_vocab(vocab, tokens, 1)
 
 
 def convert_ids_to_tokens(inv_vocab, ids):
-  return convert_by_vocab(inv_vocab, ids)
+  return convert_by_vocab(inv_vocab, ids, inv_vocab[1])
 
 
 def whitespace_tokenize(text):
@@ -125,10 +125,10 @@ class FullTokenizer(object):
     return split_tokens
 
   def convert_tokens_to_ids(self, tokens):
-    return convert_by_vocab(self.vocab, tokens)
+    return convert_by_vocab(self.vocab, tokens, 1)
 
   def convert_ids_to_tokens(self, ids):
-    return convert_by_vocab(self.inv_vocab, ids)
+    return convert_by_vocab(self.inv_vocab, ids, self.inv_vocab[1])
 
 
 class BasicTokenizer(object):
