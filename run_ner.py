@@ -36,12 +36,11 @@ flags.DEFINE_string(
   "The output directory where the model checkpoints will be written.")
 
 ## Other parameters
-flags.DEFINE_string("train_file", None,
-                    "SQuAD json for training. E.g., train-v1.1.json")
+flags.DEFINE_string("train_file", None, "")
 
-flags.DEFINE_string(
-  "predict_file", None,
-  "SQuAD json for predictions. E.g., dev-v1.1.json or test-v1.1.json")
+flags.DEFINE_string("eval_file", None, "")
+
+flags.DEFINE_string("predict_file", None, "")
 
 flags.DEFINE_string(
   "init_checkpoint", None,
@@ -58,21 +57,15 @@ flags.DEFINE_integer(
   "Sequences longer than this will be truncated, and sequences shorter "
   "than this will be padded.")
 
-flags.DEFINE_integer(
-  "doc_stride", 128,
-  "When splitting up a long document into chunks, how much stride to "
-  "take between chunks.")
-
-flags.DEFINE_integer(
-  "max_query_length", 64,
-  "The maximum number of tokens for the question. Questions longer than "
-  "this will be truncated to this length.")
-
 flags.DEFINE_bool("do_train", False, "Whether to run training.")
+
+flags.DEFINE_bool("do_eval", False, "Whether to run eval on the dev set.")
 
 flags.DEFINE_bool("do_predict", False, "Whether to run eval on the dev set.")
 
 flags.DEFINE_integer("train_batch_size", 32, "Total batch size for training.")
+
+flags.DEFINE_integer("eval_batch_size", 8, "Total batch size for eval.")
 
 flags.DEFINE_integer("predict_batch_size", 8,
                      "Total batch size for predictions.")
@@ -92,16 +85,6 @@ flags.DEFINE_integer("save_checkpoints_steps", 1000,
 
 flags.DEFINE_integer("iterations_per_loop", 1000,
                      "How many steps to make in each estimator call.")
-
-flags.DEFINE_integer(
-  "n_best_size", 20,
-  "The total number of n-best predictions to generate in the "
-  "nbest_predictions.json output file.")
-
-flags.DEFINE_integer(
-  "max_answer_length", 30,
-  "The maximum length of an answer that can be generated. This is needed "
-  "because the start and end predictions are not conditioned on one another.")
 
 flags.DEFINE_bool("use_tpu", False, "Whether to use TPU or GPU/CPU.")
 
@@ -133,14 +116,6 @@ flags.DEFINE_bool(
   "verbose_logging", False,
   "If true, all of the warnings related to data processing will be printed. "
   "A number of warnings are expected for a normal SQuAD evaluation.")
-
-flags.DEFINE_bool(
-  "version_2_with_negative", False,
-  "If true, the SQuAD examples contain some that do not have an answer.")
-
-flags.DEFINE_float(
-  "null_score_diff_threshold", 0.0,
-  "If null_score - best_non_null is greater than the threshold predict null.")
 
 
 class InputFeatures(object):
@@ -310,7 +285,6 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
     # tf.Example only supports tf.int64, but the TPU only supports tf.int32.
     # So cast all int64 to int32.
     for name in list(example.keys()):
-      tf.logging.info("============_decode_record:%s", name)
       t = example[name]
       if t.dtype == tf.int64:
         t = tf.to_int32(t)
@@ -463,7 +437,6 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
     output_spec = None
     if mode == tf.estimator.ModeKeys.TRAIN:
-
       train_op = optimization.create_optimizer(
         total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
 
@@ -472,13 +445,20 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
         loss=total_loss,
         train_op=train_op,
         scaffold_fn=scaffold_fn)
+
     elif mode == tf.estimator.ModeKeys.EVAL:
       def metric_fn(per_example_loss, label_ids, logits, trans):
-        predict_labels = decode(logits, sequence_lengths, trans)
+        predict_labels = tensorflow.contrib.crf.crf_decode(
+          potentials=logits, transition_params=trans, sequence_length=sequence_lengths)
+        # predict_labels = decode(logits, sequence_lengths, trans)
         accuracy = tf.metrics.accuracy(label_ids, predict_labels)
+        precision = tf.metrics.precision(label_ids, predict_labels)
+        recall = tf.metrics.recall(label_ids, predict_labels)
         loss = tf.metrics.mean(per_example_loss)
         return {
           "eval_accuracy": accuracy,
+          "eval_precision": precision,
+          "eval_recall": recall,
           "eval_loss": loss,
         }
 
@@ -488,8 +468,11 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
         loss=total_loss,
         eval_metrics=eval_metrics,
         scaffold_fn=scaffold_fn)
+
     else:
-      predict_labels = decode(logits, sequence_lengths, trans)
+      predict_labels = tensorflow.contrib.crf.crf_decode(
+        potentials=logits, transition_params=trans, sequence_length=sequence_lengths)
+      # predict_labels = decode(logits, sequence_lengths, trans)
       predictions = {
         "input_ids": input_ids,
         "predict_ids": predict_labels,
@@ -548,6 +531,12 @@ def main(_):
     example_count = parse_file_len(FLAGS.train_file)
     num_train_steps = int(example_count / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
+  elif FLAGS.do_eval:
+    example_count = parse_file_len(FLAGS.eval_file)
+  elif FLAGS.do_predict:
+    example_count = parse_file_len(FLAGS.predict_file)
+  else:
+    pass
 
   model_fn = model_fn_builder(
     bert_config=bert_config,
@@ -566,6 +555,7 @@ def main(_):
     model_fn=model_fn,
     config=run_config,
     train_batch_size=FLAGS.train_batch_size,
+    eval_batch_size=FLAGS.eval_batch_size,
     predict_batch_size=FLAGS.predict_batch_size)
 
   if FLAGS.do_train:
@@ -595,6 +585,43 @@ def main(_):
       is_training=True,
       drop_remainder=True)
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+
+  if FLAGS.do_eval:
+    # We write to a temporary file to avoid storing very large constant tensors
+    # in memory.
+    eval_writer = FeatureWriter(
+      filename=os.path.join(FLAGS.output_dir, "eval.tf_record"),
+      is_training=True)
+    read_ner_features(
+      file_name=FLAGS.eval_file,
+      text_tokenizer=text_tokenizer,
+      label_tokenizer=label_tokenizer,
+      max_seq_length=FLAGS.max_seq_length,
+      is_training=True,
+      output_fn=eval_writer.process_feature)
+    eval_writer.close()
+
+    eval_steps = int(example_count / FLAGS.eval_batch_size)
+
+    tf.logging.info("***** Running evaluating *****")
+    tf.logging.info("  Num orig examples = %d", example_count)
+    tf.logging.info("  Num split examples = %d", eval_writer.num_features)
+    tf.logging.info("  Batch size = %d", FLAGS.eval_batch_size)
+    tf.logging.info("  Num steps = %d", eval_steps)
+
+    eval_input_fn = input_fn_builder(
+      input_file=eval_writer.filename,
+      seq_length=FLAGS.max_seq_length,
+      is_training=True,
+      drop_remainder=True)
+    result = estimator.evaluate(input_fn=eval_input_fn, steps=eval_steps)
+
+    output_eval_file = os.path.join(FLAGS.output_dir, "eval_results.txt")
+    with tf.gfile.GFile(output_eval_file, "w") as writer:
+      tf.logging.info("***** Eval results *****")
+      for key in sorted(result.keys()):
+        tf.logging.info("  %s = %s", key, str(result[key]))
+        writer.write("%s = %s\n" % (key, str(result[key])))
 
   if FLAGS.do_predict:
     example_count = parse_file_len(FLAGS.predict_file)

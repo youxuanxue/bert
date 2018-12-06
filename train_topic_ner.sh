@@ -11,8 +11,8 @@ python run_ner.py \
   --init_checkpoint=$BERT_BASE_DIR/bert_model.ckpt \
   --do_train=True \
   --train_file=$NER_DIR/train.txt \
-  --do_predict=True \
-  --predict_file=$NER_DIR/dev.txt \
+  --do_eval=True \
+  --eval_file=$NER_DIR/dev.txt \
   --max_seq_length=128 \
   --train_batch_size=32 \
   --learning_rate=2e-5 \
