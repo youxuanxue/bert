@@ -426,15 +426,6 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
       tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
                       init_string)
 
-    def decode(logits, lengths, trans):
-      # inference final labels usa viterbi Algorithm
-      paths = []
-      for score, length in zip(logits, lengths):
-        score = score[:length]
-        path, _ = tensorflow.contrib.crf.viterbi_decode(score, trans)
-        paths.append(path)
-      return paths
-
     output_spec = None
     if mode == tf.estimator.ModeKeys.TRAIN:
       train_op = optimization.create_optimizer(
@@ -448,9 +439,8 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
     elif mode == tf.estimator.ModeKeys.EVAL:
       def metric_fn(per_example_loss, label_ids, logits, trans):
-        predict_labels = tensorflow.contrib.crf.crf_decode(
+        predict_labels, _ = tensorflow.contrib.crf.crf_decode(
           potentials=logits, transition_params=trans, sequence_length=sequence_lengths)
-        # predict_labels = decode(logits, sequence_lengths, trans)
         accuracy = tf.metrics.accuracy(label_ids, predict_labels)
         precision = tf.metrics.precision(label_ids, predict_labels)
         recall = tf.metrics.recall(label_ids, predict_labels)
@@ -470,9 +460,8 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
         scaffold_fn=scaffold_fn)
 
     else:
-      predict_labels = tensorflow.contrib.crf.crf_decode(
+      predict_labels, _ = tensorflow.contrib.crf.crf_decode(
         potentials=logits, transition_params=trans, sequence_length=sequence_lengths)
-      # predict_labels = decode(logits, sequence_lengths, trans)
       predictions = {
         "input_ids": input_ids,
         "predict_ids": predict_labels,
